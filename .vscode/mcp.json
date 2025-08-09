@@ -1,0 +1,13 @@
+{
+	"servers": {
+		"last-mile-mcp": {
+			"type": "stdio",
+			"command": "npm",
+			"args": [
+				"run",
+				"server:dev"
+			]
+		}
+	},
+	"inputs": []
+}
