@@ -1,7 +1,8 @@
 import axios from "axios";
 
+const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+
 export async function getLatLngFromAddress(address: string): Promise<{ lat: number; lng: number } | null> {
-  const apiKey = process.env.GOOGLE_MAPS_API_KEY;
   if (!apiKey) throw new Error("Missing GOOGLE_MAPS_API_KEY env variable");
 
   const encodedAddress = encodeURIComponent(address);
@@ -37,4 +38,11 @@ export function haversineDistance(coord1: { latitude: number; longitude: number 
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 
   return R * c;
+}
+
+export async function getTravelTime(originLat: number, originLng: number, destLat: number, destLng: number) {
+  const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${originLat},${originLng}&destinations=${destLat},${destLng}&key=${apiKey}`;
+  const { data } = await axios.get(url);
+  if (data.status !== "OK") throw new Error("Failed to get travel time");
+  return data.rows[0].elements[0];
 }

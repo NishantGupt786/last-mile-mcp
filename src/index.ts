@@ -7,7 +7,7 @@ import { z } from "zod";
 import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "crypto";
 import nodemailer from "nodemailer";
-import { getLatLngFromAddress, haversineDistance } from "./utils.js";
+import { getLatLngFromAddress, getTravelTime, haversineDistance } from "./utils.js";
 
 const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
@@ -131,7 +131,6 @@ server.resource(
   }
 );
 
-// ====== Driver ======
 server.resource(
   "drivers",
   "drivers://all",
@@ -153,6 +152,7 @@ server.resource(
     };
   }
 );
+
 server.resource(
   "driver-details",
   new ResourceTemplate("drivers://{driverId}/profile", { list: undefined }),
@@ -406,6 +406,7 @@ server.tool(
     };
   }
 );
+
 const mkTool = <T extends z.ZodTypeAny>(
   name: string,
   desc: string,
@@ -505,28 +506,75 @@ mkTool(
 );
 
 mkTool(
+  "notify_merchant",
+  "Notify merchant via preferred channel",
+  z.object({
+    merchantId: z.string(),
+    message: z.string(),
+    subject: z.string(),
+  }),
+  { title: "Notify Merchant" },
+  async (params) => {
+    const merchant = await prisma.merchant.findUnique({
+      where: { id: Number(params.merchantId) },
+      select: { email: true },
+    })
+    if (!merchant?.email) {
+      throw new Error(`Email not found for merchant ${params.merchantId}`)
+    }
+
+    await transporter.sendMail({
+      from: '"The Last Mile" <no-reply@lastmile.com>',
+      to: merchant.email,
+      subject: params.subject,
+      text: params.message,
+    })
+
+    return {
+      merchantId: params.merchantId,
+      delivered: true,
+      message: params.message,
+      subject: params.subject,
+    }
+  }
+)
+
+mkTool(
   "create_order",
   "Create an order with user and merchant details",
   z.object({
     userId: z.string(),
     merchantId: z.string(),
     destination: z.string().optional(),
+    items: z.array(z.string()).min(1)
   }),
   { title: "Create Order" },
   async (params) => {
-    const userId = Number(params.userId);
-    const merchantId = Number(params.merchantId);
+    const userId = Number(params.userId)
+    const merchantId = Number(params.merchantId)
 
     if ([userId, merchantId].some((id) => isNaN(id))) {
-      throw new Error("userId and merchantId must be valid numbers");
+      throw new Error("userId and merchantId must be valid numbers")
     }
 
     const [user, merchant] = await Promise.all([
       prisma.user.findUnique({ where: { id: userId } }),
       prisma.merchant.findUnique({ where: { id: merchantId } }),
-    ]);
-    if (!user) throw new Error(`User with id ${userId} not found`);
-    if (!merchant) throw new Error(`Merchant with id ${merchantId} not found`);
+    ])
+    if (!user) throw new Error(`User with id ${userId} not found`)
+    if (!merchant) throw new Error(`Merchant with id ${merchantId} not found`)
+
+    if (!Array.isArray(merchant.inventory)) {
+      throw new Error("Merchant inventory is not available")
+    }
+
+    const missingItems = params.items.filter(
+      (item) => !merchant.inventory.includes(item)
+    )
+
+    if (missingItems.length > 0) {
+      throw new Error(`Merchant does not have the following items: ${missingItems.join(", ")}`)
+    }
 
     const order = await prisma.order.create({
       data: {
@@ -535,20 +583,22 @@ mkTool(
         userId,
         source: merchant.address,
         destination: params.destination ?? null,
+        items: params.items
       },
-    });
+    })
 
     return {
       orderId: order.id,
       message: "Order created successfully",
       order,
-    };
+    }
   }
-);
+)
+
 
 mkTool(
   "change_order_status",
-  "Change the status of an order",
+  "Change the status of an order. This should be called at every change of event.",
   z.object({
     orderId: z.string(),
     status: z.enum(["preparing", "pending", "delivered", "failed", "cancelled"]),
@@ -638,35 +688,178 @@ mkTool(
 );
 
 mkTool(
-  "re_route_driver",
-  "Reassign or reroute a driver",
-  z.object({ driverId: z.string(), newRoute: z.any() }).partial(),
-  { title: "Reroute Driver" },
-  async (params) => {
+  "check_driver_current_order_status",
+  "Check if a driver has an active order and return prep time",
+  z.object({ driverId: z.number() }),
+  { title: "Check Driver Order Status" },
+  async ({ driverId }) => {
+    const driver = await prisma.driver.findUnique({
+      where: { id: driverId },
+      include: { orders: { where: { status: "preparing" }, include: { merchant: true } } }
+    });
+
+    if (!driver) throw new Error(`Driver ${driverId} not found`);
+
+    const currentOrder = driver.orders[0];
+    if (!currentOrder) return { hasOrder: false };
+
     return {
-      driverId: params.driverId ?? null,
-      reassigned: true,
-      newRoute: params.newRoute ?? null,
+      hasOrder: true,
+      orderId: currentOrder.id,
+      prepMinutes: currentOrder.merchant.prepMinutes,
+      source: currentOrder.source,
+      destination: currentOrder.destination
     };
   }
 );
 
 mkTool(
-  "get_nearby_merchants",
-  "Find alternative nearby merchants",
-  z
-    .object({
-      lat: z.number().optional(),
-      lng: z.number().optional(),
-      radius_m: z.number().optional(),
-    })
-    .optional(),
-  { title: "Nearby Merchants", readOnlyHint: true },
-  async (params) => {
-    const alt = [{ id: "alt_1", name: "Nearby Diner", prep_minutes: 8 }];
-    return alt;
+  "assign_nearby_order_to_driver",
+  "Find and assign a nearby order with shorter prep time to driver",
+  z.object({
+    driverId: z.number(),
+    currentPrepMinutes: z.number(),
+    maxDistanceKm: z.number().default(5)
+  }),
+  { title: "Assign Nearby Order" },
+  async ({ driverId, currentPrepMinutes, maxDistanceKm }) => {
+    const driver = await prisma.driver.findUnique({ where: { id: driverId } });
+    if (!driver) throw new Error(`Driver ${driverId} not found`);
+
+    const candidateOrders = await prisma.order.findMany({
+      where: { status: "preparing", driverId: null },
+      include: { merchant: true }
+    });
+
+    const nearbyOrders = [];
+    for (const order of candidateOrders) {
+      if (!order.source) continue;
+
+      const [lat, lng] = order.source.split(",").map(Number);
+      const travel = await getTravelTime(driver.lat, driver.lng, lat, lng);
+
+      if (
+        travel.status === "OK" &&
+        travel.distance.value / 1000 <= maxDistanceKm &&
+        order.merchant.prepMinutes <= currentPrepMinutes - 5
+      ) {
+        nearbyOrders.push({
+          id: order.id,
+          prepMinutes: order.merchant.prepMinutes,
+          distanceKm: travel.distance.value / 1000
+        });
+      }
+    }
+
+    if (nearbyOrders.length === 0) return { assigned: false };
+
+    const selected = nearbyOrders.sort((a, b) => a.prepMinutes - b.prepMinutes)[0];
+    await prisma.order.update({ where: { id: selected.id }, data: { driverId } });
+
+    return { assigned: true, orderId: selected.id, distanceKm: selected.distanceKm };
   }
 );
+
+mkTool(
+  "get_nearby_merchants_with_same_items",
+  "Find nearby merchants who sell the same items",
+  z.object({
+    address: z.string(),
+    items: z.array(z.string()).min(1),
+    radiusMeters: z.number().default(5000)
+  }),
+  { title: "Get Nearby Merchants With Same Items" },
+  async ({ address, items, radiusMeters }) => {
+    const coords = await getLatLngFromAddress(address);
+    if (!coords) {
+      throw new Error(`Could not geocode address: ${address}`);
+    }
+
+    const merchants = await prisma.merchant.findMany({
+      where: { status: "open" }
+    });
+
+    const results: any[] = [];
+
+    for (const merchant of merchants) {
+      if (!Array.isArray(merchant.inventory)) continue;
+
+      const hasAllItems = items.every((item) =>
+        merchant.inventory.includes(item)
+      );
+      if (!hasAllItems) continue;
+
+      if (!merchant.address) continue;
+
+      const merchantCoords = await getLatLngFromAddress(merchant.address);
+      if (!merchantCoords) continue;
+
+      const dist = haversineDistance(
+        { latitude: coords.lat, longitude: coords.lng },
+        { latitude: merchantCoords.lat, longitude: merchantCoords.lng }
+      );
+
+      if (dist <= radiusMeters) {
+        results.push({
+          ...merchant,
+          distanceMeters: dist
+        });
+      }
+    }
+
+    return {
+      origin: coords,
+      merchants: results
+    };
+  }
+);
+
+mkTool(
+  "reassign_order_to_new_merchant",
+  "Cancel an existing order and create a new one with a different merchant",
+  z.object({
+    orderId: z.string(),
+    newMerchantId: z.string()
+  }),
+  { title: "Reassign Order" },
+  async ({ orderId, newMerchantId }) => {
+    const id = Number(orderId)
+    const merchantId = Number(newMerchantId)
+
+    if ([id, merchantId].some((n) => isNaN(n))) {
+      throw new Error("orderId and newMerchantId must be valid numbers")
+    }
+
+    const oldOrder = await prisma.order.findUnique({ where: { id } })
+    if (!oldOrder) throw new Error(`Order ${id} not found`)
+
+    const newMerchant = await prisma.merchant.findUnique({ where: { id: merchantId } })
+    if (!newMerchant) throw new Error(`Merchant ${merchantId} not found`)
+
+    await prisma.order.update({
+      where: { id },
+      data: { status: "cancelled" }
+    })
+
+    const newOrder = await prisma.order.create({
+      data: {
+        status: "preparing",
+        merchantId: newMerchant.id,
+        userId: oldOrder.userId,
+        source: newMerchant.address,
+        destination: oldOrder.destination,
+        items: oldOrder.items
+      }
+    })
+
+    return {
+      message: `Order reassigned from merchant ${oldOrder.merchantId} to ${newMerchant.id}`,
+      oldOrderId: id,
+      newOrderId: newOrder.id
+    }
+  }
+)
+
 mkTool(
   "check_traffic",
   "Check traffic conditions",
@@ -859,19 +1052,67 @@ mkTool(
     return { notified: true };
   }
 );
+
 mkTool(
   "get_driver_status",
   "Get driver status",
-  z.object({ driverId: z.string() }),
+  z.object({ driverId: z.number() }),
   { title: "Driver Status", readOnlyHint: true },
-  async (params) => {
+  async ({ driverId }) => {
+    const driver = await prisma.driver.findUnique({
+      where: { id: driverId },
+      select: { id: true, lat: true, lng: true, state: true }
+    });
+    if (!driver) throw new Error(`Driver ${driverId} not found`);
+
     return {
-      driverId: params.driverId,
-      location: { lat: 0, lng: 0 },
-      state: "idle",
+      driverId: driver.id,
+      location: { lat: driver.lat, lng: driver.lng },
+      state: driver.state
     };
   }
 );
+
+mkTool(
+  "update_driver_state",
+  "Update driver state",
+  z.object({ driverId: z.number(), state: z.enum(["enroute", "idle", "delivering", "offline"]) }),
+  { title: "Update Driver State" },
+  async ({ driverId, state }) => {
+    const updated = await prisma.driver.update({
+      where: { id: driverId },
+      data: { state }
+    });
+    return { driverId: updated.id, state: updated.state };
+  }
+);
+
+mkTool(
+  "update_driver_location",
+  "Update driver location from address",
+  z.object({
+    driverId: z.number(),
+    address: z.string()
+  }),
+  { title: "Update Driver Location" },
+  async ({ driverId, address }) => {
+    const coords = await getLatLngFromAddress(address);
+    if (!coords) {
+      throw new Error(`Could not geocode address: ${address}`);
+    }
+
+    const updated = await prisma.driver.update({
+      where: { id: driverId },
+      data: { lat: coords.lat, lng: coords.lng }
+    });
+
+    return {
+      driverId: updated.id,
+      location: { lat: updated.lat, lng: updated.lng }
+    };
+  }
+);
+
 mkTool(
   "predict_delivery_delay",
   "Predict likely delay",
@@ -881,15 +1122,31 @@ mkTool(
     return { predicted_delay_mins: 15, confidence: 0.79 };
   }
 );
+
 mkTool(
-  "schedule_rescue_pickup",
-  "Schedule rescue pickup",
-  z.object({ orderId: z.string(), backupDriverId: z.string().optional() }),
-  { title: "Rescue Pickup" },
-  async (params) => {
-    return { scheduled: true, orderId: params.orderId };
+  "unassign_order_from_driver",
+  "Unassign a driver from an order",
+  z.object({ orderId: z.string() }),
+  { title: "Unassign Order From Driver" },
+  async ({ orderId }) => {
+    const id = Number(orderId);
+    if (isNaN(id)) throw new Error("orderId must be a valid number");
+
+    const order = await prisma.order.findUnique({ where: { id } });
+    if (!order) throw new Error(`Order with id ${id} not found`);
+    if (order.driverId === null) {
+      return { unassigned: false, message: "No driver was assigned to this order" };
+    }
+
+    await prisma.order.update({
+      where: { id },
+      data: { driverId: null }
+    });
+
+    return { unassigned: true, orderId: id, message: "Driver unassigned successfully" };
   }
 );
+
 mkTool(
   "send_survey_feedback_request",
   "Send feedback survey",
@@ -920,15 +1177,7 @@ mkTool(
     return { ticketId: ticket.id };
   }
 );
-mkTool(
-  "assign_backup_driver",
-  "Assign a backup driver",
-  z.object({ orderId: z.string(), backupDriverId: z.string() }),
-  { title: "Assign Backup" },
-  async (params) => {
-    return { assigned: true, backupDriverId: params.backupDriverId };
-  }
-);
+
 mkTool(
   "verify_address",
   "Verify and normalize address",
@@ -938,20 +1187,7 @@ mkTool(
     return { valid: true, normalized: params.address };
   }
 );
-mkTool(
-  "process_order_cancellation",
-  "Process order cancellation",
-  z.object({ orderId: z.string(), reason: z.string().optional() }),
-  { title: "Cancel Order" },
-  async (params) => {
-    const out = {
-      orderId: params.orderId,
-      cancelled: true,
-      reason: params.reason ?? "user_request",
-    };
-    return out;
-  }
-);
+
 mkTool(
   "estimate_delivery_time",
   "Estimate delivery time",
@@ -1004,6 +1240,7 @@ mkTool(
     return { offer_sent: true };
   }
 );
+
 mkTool(
   "track_package_location",
   "Track package",
@@ -1018,6 +1255,7 @@ mkTool(
     };
   }
 );
+
 mkTool(
   "record_conversation",
   "Record conversation/transcript",

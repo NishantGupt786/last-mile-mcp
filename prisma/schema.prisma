@@ -16,6 +16,7 @@ model Merchant {
   packagingFeedback PackagingFeedback[]
   phone       String?
   email       String?
+  inventory   String[]
 }
 
 model User {
@@ -48,6 +49,7 @@ model Order {
   driverId    Int?
   source      String? 
   destination String?
+  items       String[]
 }
 
 
