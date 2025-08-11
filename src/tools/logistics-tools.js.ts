@@ -2,6 +2,7 @@ import { z } from "zod";
 import { prisma } from "../lib/database.js";
 
 export function registerLogisticsTools(mkTool: any) {
+  // pending
   mkTool(
     "check_traffic",
     "Check traffic conditions",
@@ -13,6 +14,8 @@ export function registerLogisticsTools(mkTool: any) {
       return { congestion: "moderate", delay_mins: 12 };
     }
   );
+
+  // pending
   mkTool(
     "suggest_safe_drop_off",
     "Suggest safe drop-off options",
@@ -22,6 +25,8 @@ export function registerLogisticsTools(mkTool: any) {
       return { option: "concierge", details: "Leave with concierge" };
     }
   );
+
+  // pending
   mkTool(
     "find_nearby_locker",
     "Find parcel lockers nearby",
@@ -33,6 +38,8 @@ export function registerLogisticsTools(mkTool: any) {
       return [{ id: "locker_1", distance_m: 120 }];
     }
   );
+
+  // pending
   mkTool(
     "calculate_alternative_route",
     "Calculate alternative route",
@@ -44,6 +51,8 @@ export function registerLogisticsTools(mkTool: any) {
       return { eta_minutes: 18, route: ["A", "B", "C"] };
     }
   );
+
+  // pending  
   mkTool(
     "predict_delivery_delay",
     "Predict likely delay",
@@ -53,6 +62,8 @@ export function registerLogisticsTools(mkTool: any) {
       return { predicted_delay_mins: 15, confidence: 0.79 };
     }
   );
+
+  // pending
   mkTool(
     "estimate_delivery_time",
     "Estimate delivery time",
@@ -64,6 +75,8 @@ export function registerLogisticsTools(mkTool: any) {
       return { eta_minutes: 25 };
     }
   );
+
+  // pending
   mkTool(
     "track_package_location",
     "Track package",
@@ -78,6 +91,8 @@ export function registerLogisticsTools(mkTool: any) {
       };
     }
   );
+
+  // pending
   mkTool(
     "integrate_weather_alerts",
     "Integrate weather alerts (simulated)",

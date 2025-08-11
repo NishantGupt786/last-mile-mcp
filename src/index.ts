@@ -19,6 +19,8 @@ async function main() {
   
   registerResources(server);
   
+  // 13 tools pending to finish base mcp
+  // more tools required
   registerTools(server);
   
   const transport = new StdioServerTransport();

@@ -26,6 +26,7 @@ model User {
   address String
   phone   String
   orders  Order[]
+  humanEscalations HumanEscalation[]
 }
 
 model Driver {
@@ -74,6 +75,8 @@ model HumanEscalation {
   scenarioId String?
   reason     String
   createdAt  DateTime @default(now())
+  userId     Int?
+  user      User?    @relation(fields: [userId], references: [id])
 }
 
 model Conversation {

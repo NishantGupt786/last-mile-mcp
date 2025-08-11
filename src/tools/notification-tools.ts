@@ -1,6 +1,30 @@
 import { z } from "zod";
 import { prisma } from "../lib/database.js";
 import { sendEmail } from "../lib/email.js";
+import axios from "axios";
+
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID!;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN!;
+const TWILIO_MESSAGING_SERVICE_SID = process.env.TWILIO_MESSAGING_SERVICE_SID!;
+
+async function sendSMS(to: string, body: string) {
+  const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
+  const data = new URLSearchParams({
+    To: to,
+    MessagingServiceSid: TWILIO_MESSAGING_SERVICE_SID,
+    Body: body,
+  });
+
+  await axios.post(url, data.toString(), {
+    auth: {
+      username: TWILIO_ACCOUNT_SID,
+      password: TWILIO_AUTH_TOKEN,
+    },
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+  });
+}
 
 export function registerNotificationTools(mkTool: any) {
   mkTool(
@@ -63,14 +87,40 @@ export function registerNotificationTools(mkTool: any) {
   mkTool(
     "notify_resolution",
     "Notify all parties of a resolution",
-    z
-      .object({ runId: z.string().optional(), message: z.string().optional() })
-      .optional(),
+    z.object({ orderId: z.string(), message: z.string().optional() }),
     { title: "Notify Resolution" },
-    async (params: any) => {
-      return { notified: true, message: params?.message ?? "resolved" };
+    async ({ orderId, message }: { orderId: string; message: string }) => {
+      const id = Number(orderId);
+      if (isNaN(id)) throw new Error("Invalid orderId");
+
+      const order = await prisma.order.findUnique({
+        where: { id },
+        include: {
+          user: true,
+          merchant: true,
+          driver: true,
+        },
+      });
+
+      if (!order) throw new Error(`Order ${orderId} not found`);
+
+      const text = message ?? `Your order #${orderId} has been resolved.`;
+
+      const phoneNumbers: string[] = [];
+      if (order.user.phone) phoneNumbers.push(order.user.phone);
+      if (order.merchant.phone) phoneNumbers.push(order.merchant.phone);
+      if (order.driver?.phone) phoneNumbers.push(order.driver.phone);
+
+      await Promise.all(phoneNumbers.map((num) => sendSMS(num, text)));
+
+      return {
+        notified: true,
+        message: text,
+        recipients: phoneNumbers,
+      };
     }
   );
+  // pending
   mkTool(
     "contact_recipient_via_chat",
     "Contact recipient via chat",

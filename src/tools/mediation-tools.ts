@@ -1,34 +1,49 @@
 import { z } from "zod";
 import { prisma } from "../lib/database.js";
 import { randomUUID } from "crypto";
+import { sendEmail } from "../lib/email.js";
 
 export function registerMediationTools(mkTool: any) {
   mkTool(
-    "initiate_mediation_flow",
-    "Start mediation session",
-    z
-      .object({
-        scenarioId: z.string().optional(),
-        reason: z.string().optional(),
-      })
-      .optional(),
-    { title: "Initiate Mediation" },
+    "escalate_issue_to_human",
+    "Escalate to human ops",
+    z.object({
+      reason: z.string().optional(),
+      userId: z.string(),
+    }),
+    { title: "Escalate" },
     async (params: any) => {
-      const session = {
-        session_id: randomUUID(),
-        scenarioId: params?.scenarioId ?? null,
-      };
-      await prisma.humanEscalation.create({
+      const userId = Number(params.userId);
+      if (isNaN(userId)) throw new Error("Invalid userId");
+
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true },
+      });
+
+      if (!user?.email) {
+        throw new Error(`Email not found for user with id ${userId}`);
+      }
+
+      const ticket = await prisma.humanEscalation.create({
         data: {
-          scenarioId: params?.scenarioId ?? null,
-          reason: params?.reason ?? "mediation",
-          createdAt: new Date(),
+          scenarioId: params.scenarioId ?? null,
+          reason: params.reason ?? "escalation",
+          userId,
         },
       });
-      return session;
+
+      await sendEmail(
+        user.email,
+        params.reason ?? "Support Escalation",
+        `Hello,\n\nA customer support specialist will be in touch with you soon regarding your issue.\n\nTicket ID: ${ticket.id}\n\nThank you for your patience.`
+      );
+
+      return { ticketId: ticket.id };
     }
   );
 
+  // pending
   mkTool(
     "collect_evidence",
     "Collect photos/videos/text evidence",
@@ -51,10 +66,10 @@ export function registerMediationTools(mkTool: any) {
       return { uploaded: true, recordId: rec.id };
     }
   );
-
+  // pending
   mkTool(
     "analyze_evidence",
-    "Analyze evidence locally (simulated)",
+    "Analyze evidence locally",
     z.object({ recordId: z.number().optional() }).optional(),
     { title: "Analyze Evidence" },
     async (params: any) => {
@@ -88,6 +103,7 @@ export function registerMediationTools(mkTool: any) {
       return refund;
     }
   );
+  // pending
   mkTool(
     "exonerate_driver",
     "Exonerate driver",
@@ -97,6 +113,7 @@ export function registerMediationTools(mkTool: any) {
       return { driverId: params.driverId, exonerated: true };
     }
   );
+
   mkTool(
     "log_merchant_packaging_feedback",
     "Log packaging feedback",
@@ -114,36 +131,6 @@ export function registerMediationTools(mkTool: any) {
     }
   );
 
-  mkTool(
-    "send_survey_feedback_request",
-    "Send feedback survey",
-    z.object({ customerId: z.string() }),
-    { title: "Send Survey" },
-    async (params: any) => {
-      return { sent: true, customerId: params.customerId };
-    }
-  );
-  mkTool(
-    "escalate_issue_to_human",
-    "Escalate to human ops",
-    z
-      .object({
-        scenarioId: z.string().optional(),
-        reason: z.string().optional(),
-      })
-      .optional(),
-    { title: "Escalate" },
-    async (params: any) => {
-      const ticket = await prisma.humanEscalation.create({
-        data: {
-          scenarioId: params?.scenarioId ?? null,
-          reason: params?.reason ?? "escalation",
-          createdAt: new Date(),
-        },
-      });
-      return { ticketId: ticket.id };
-    }
-  );
   mkTool(
     "log_incident_report",
     "Log incident report",
@@ -183,12 +170,44 @@ export function registerMediationTools(mkTool: any) {
       return { conversationId: c.id };
     }
   );
+
   mkTool(
     "alert_local_authority",
     "Alert local authority",
-    z.object({ incidentId: z.number().optional() }).optional(),
+    z.object({ incidentId: z.number().optional() }),
     { title: "Alert Authority" },
     async (params: any) => {
+      const incidentId = params?.incidentId ?? null;
+      const incident = await prisma.incident.findUnique({
+        where: { id: incidentId },
+        select: { id: true, description: true, metadata: true },
+      });
+
+      if (!incident)
+        throw new Error(`Incident with ID ${incidentId} not found`);
+
+      const emailBody = `
+🚨 **Emergency Incident Report** 🚨
+
+Incident ID: ${incident.id}
+Description: ${incident.description || "No description provided."}
+
+Additional Details:
+${
+  incident.metadata
+    ? JSON.stringify(incident.metadata, null, 2)
+    : "No metadata available."
+}
+
+Please take immediate action.
+    `.trim();
+
+      await sendEmail(
+        "nishantgupta2325@gmail.com",
+        `🚨 Alert SOS - Incident #${incident.id}`,
+        emailBody
+      );
+
       return { alerted: true };
     }
   );
