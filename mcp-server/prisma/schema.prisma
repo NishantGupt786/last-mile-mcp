@@ -1,0 +1,112 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Merchant {
+  id                Int                 @id @default(autoincrement())
+  name              String
+  status            String
+  prepMinutes       Int
+  address           String
+  orders            Order[]
+  packagingFeedback PackagingFeedback[]
+  phone             String?
+  email             String?
+  inventory         String[]
+}
+
+model User {
+  id               Int               @id @default(autoincrement())
+  name             String
+  email            String            @unique
+  address          String
+  phone            String
+  orders           Order[]
+  humanEscalations HumanEscalation[]
+}
+
+model Driver {
+  id      Int     @id @default(autoincrement())
+  name    String
+  state   String
+  lat     Float
+  lng     Float
+  phone   String?
+  orders  Order[]
+}
+
+model Order {
+  id                  Int                  @id @default(autoincrement())
+  status              String
+  merchant            Merchant             @relation(fields: [merchantId], references: [id])
+  merchantId          Int
+  user                User                 @relation(fields: [userId], references: [id])
+  userId              Int
+  driver              Driver?              @relation(fields: [driverId], references: [id])
+  driverId            Int?
+  source              String?
+  destination         String?
+  items               String[]
+
+  incidents           Incident[]
+  packagingFeedbacks  PackagingFeedback[]
+  conversations       Conversation[]
+  humanEscalations    HumanEscalation[]
+}
+
+model Incident {
+  id          Int      @id @default(autoincrement())
+  scenarioId  String?
+  description String
+  metadata    String?
+  createdAt   DateTime @default(now())
+
+  orderId     Int?
+  order       Order?   @relation(fields: [orderId], references: [id])
+}
+
+model PackagingFeedback {
+  id         Int      @id @default(autoincrement())
+  merchantId Int
+  merchant   Merchant @relation(fields: [merchantId], references: [id])
+  feedback   String
+  createdAt  DateTime @default(now())
+
+  orderId    Int?
+  order      Order?   @relation(fields: [orderId], references: [id])
+}
+
+model HumanEscalation {
+  id         Int      @id @default(autoincrement())
+  scenarioId String?
+  reason     String
+  createdAt  DateTime @default(now())
+  userId     Int?
+  user       User?    @relation(fields: [userId], references: [id])
+
+  orderId    Int?
+  order      Order?   @relation(fields: [orderId], references: [id])
+}
+
+model Conversation {
+  id         Int      @id @default(autoincrement())
+  transcript String
+  metadata   String?
+  createdAt  DateTime @default(now())
+
+  orderId    Int?
+  order      Order?   @relation(fields: [orderId], references: [id])
+}
+
+model ToolCall {
+  id        Int      @id @default(autoincrement())
+  runId     String
+  tool      String
+  args      String
+  result    String
+  createdAt DateTime @default(now())
+}

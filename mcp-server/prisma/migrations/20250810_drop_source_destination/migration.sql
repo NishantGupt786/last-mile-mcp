@@ -1,0 +1,2 @@
+ALTER TABLE "Driver" DROP COLUMN IF EXISTS "source";
+ALTER TABLE "Driver" DROP COLUMN IF EXISTS "destination";

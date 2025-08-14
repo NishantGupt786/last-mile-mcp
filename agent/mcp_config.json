@@ -1,0 +1,9 @@
+{
+    "mcpServers": {
+        "lastMile": {
+            "command": "node",
+            "args": ["../mcp-server/build/index.js"],
+            "transport": "stdio"
+        }
+    }
+}

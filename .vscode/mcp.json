@@ -1,0 +1,10 @@
+{
+	"servers": {
+		"last-mile-mcp": {
+			"type": "stdio",
+			"command": "node",
+            "args": ["mcp-server/build/index.js"],
+		}
+	},
+	"inputs": []
+}
